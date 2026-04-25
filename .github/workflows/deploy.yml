@@ -1,0 +1,180 @@
+name: CI/CD — Test, Build, Push, Deploy
+
+# Trigger on every push to main that touches the DeployReady challenge
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'dev-ops/DeployReady/**'
+
+jobs:
+
+  # ─────────────────────────────────────────────
+  # JOB 1 — TEST
+  # Run the full test suite. Nothing else executes
+  # if a test fails.
+  # ─────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      # Pull the repository code onto the runner
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Install the same Node version used in the Dockerfile
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: dev-ops/DeployReady/app/package-lock.json
+
+      # Install exact dependency versions from the lockfile
+      - name: Install dependencies
+        working-directory: dev-ops/DeployReady/app
+        run: npm ci
+
+      # Execute the Jest test suite — pipeline stops here on failure
+      - name: Run tests
+        working-directory: dev-ops/DeployReady/app
+        run: npm test
+
+  # ─────────────────────────────────────────────
+  # JOB 2 — BUILD
+  # Build the Docker image and tag it with the
+  # Git commit SHA for full traceability.
+  # ─────────────────────────────────────────────
+  build:
+    name: Build and tag image
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      # Pass the full image reference to downstream jobs
+      image: ${{ steps.image-ref.outputs.image }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # GHCR requires all-lowercase image names
+      - name: Derive lowercase image reference
+        id: image-ref
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "image=ghcr.io/${OWNER}/kora-analytics-api" >> "$GITHUB_OUTPUT"
+
+      # Authenticate to GHCR — GITHUB_TOKEN is auto-provided, no extra secret needed
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build and tag: commit SHA (immutable) + latest (convenience)
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: dev-ops/DeployReady
+          dockerfile: dev-ops/DeployReady/Dockerfile
+          push: false
+          tags: |
+            ${{ steps.image-ref.outputs.image }}:${{ github.sha }}
+            ${{ steps.image-ref.outputs.image }}:latest
+          load: true
+
+  # ─────────────────────────────────────────────
+  # JOB 3 — PUSH
+  # Push the tagged image to GitHub Container
+  # Registry (ghcr.io).
+  # ─────────────────────────────────────────────
+  push:
+    name: Push image to registry
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ needs.build.outputs.image }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Derive lowercase image reference
+        id: image-ref
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "image=ghcr.io/${OWNER}/kora-analytics-api" >> "$GITHUB_OUTPUT"
+
+      # Re-authenticate before pushing
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Rebuild and push both tags to the registry
+      - name: Push image to GHCR
+        uses: docker/build-push-action@v5
+        with:
+          context: dev-ops/DeployReady
+          dockerfile: dev-ops/DeployReady/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.image-ref.outputs.image }}:${{ github.sha }}
+            ${{ steps.image-ref.outputs.image }}:latest
+
+  # ─────────────────────────────────────────────
+  # JOB 4 — DEPLOY
+  # SSH into the EC2 instance, pull the new image,
+  # and restart the container. Verifies /health
+  # before finishing.
+  # ─────────────────────────────────────────────
+  deploy:
+    name: Deploy to EC2
+    needs: push
+    runs-on: ubuntu-latest
+    steps:
+      # Open an SSH connection to the EC2 server and swap the running container
+      - name: Pull new image and restart container on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          # Secrets — set these in GitHub → Settings → Secrets → Actions
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            IMAGE="${{ needs.push.outputs.image }}:${{ github.sha }}"
+
+            # Authenticate with GHCR to pull the image (needs a PAT with read:packages)
+            echo "${{ secrets.GHCR_TOKEN }}" | \
+              docker login ghcr.io -u "${{ secrets.GHCR_USERNAME }}" --password-stdin
+
+            # Pull the new image before stopping the old container (minimises downtime)
+            docker pull "$IMAGE"
+
+            # Stop and remove the old container; ignore errors if it wasn't running
+            docker stop kora-api 2>/dev/null || true
+            docker rm   kora-api 2>/dev/null || true
+
+            # Start the new container; port 80 → 3000 so /health is reachable on port 80
+            docker run -d \
+              --name kora-api \
+              --restart unless-stopped \
+              -p 80:3000 \
+              -e PORT=3000 \
+              -e NODE_ENV=production \
+              "$IMAGE"
+
+            # Give the app a few seconds to boot, then confirm /health returns 200
+            sleep 5
+            curl -sf http://localhost/health || \
+              { echo "Health check failed — rolling back"; exit 1; }
+
+            # Clean up dangling images to keep EC2 disk usage low
+            docker image prune -f
