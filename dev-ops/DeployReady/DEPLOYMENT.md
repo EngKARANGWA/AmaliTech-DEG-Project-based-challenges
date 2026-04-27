@@ -13,7 +13,7 @@ GitHub Actions Pipeline
   └── 4. SSH → EC2 → docker pull + restart
                          │
                          ▼
-                  EC2 t2.micro (Amazon Linux 2023)
+                  EC2 t3.micro (Amazon Linux 2023)
                   Public IP: 13.60.70.231
                   Docker container: kora-api
                   Port 80 → 3000
@@ -25,7 +25,7 @@ GitHub Actions Pipeline
 
 **Instance details:**
 - AMI: Amazon Linux 2023
-- Instance type: t2.micro (free tier)
+- Instance type: t3.micro — current-generation burstable instance, chosen over t2.micro because t3 offers better baseline CPU performance, uses the newer Nitro hypervisor, and is eligible for the AWS free tier
 - Public IP: 13.60.70.231
 - Key pair: `kora.pem` — stored securely, never committed to the repository
 

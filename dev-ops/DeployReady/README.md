@@ -1,141 +1,168 @@
-# DeployReady
+# Kora Analytics API — DevOps Implementation
 
-This challenge is designed to test your understanding of core DevOps practices: containerisation, automated pipelines, and cloud deployment.
+A Node.js REST API containerised with Docker, deployed to AWS EC2, and delivered via an automated GitHub Actions CI/CD pipeline.
 
----
-
-## 1. Business Context
-
-**Client:** Kora Analytics
-**Industry:** SaaS — Data dashboards for logistics companies
-
-### The Problem
-
-Every time the Kora team wants to deploy a new version of their app, a developer manually SSHs into the server, pulls the code, and restarts the process by hand. There are no automated tests before a release and no way to tell if a deploy broke something until a customer complains.
-
-### Your Role
-
-You are joining as their first DevOps engineer. The application code already works — your job is to **containerise it, automate the delivery pipeline, and get it running on a cloud platform** (AWS, GCP, Azure, or any other cloud provider you are familiar with).
+**Live endpoint:** `http://13.60.70.231/health`
 
 ---
 
-## 2. The Application
+## Architecture Overview
 
-A simple Node.js API is provided in the [`app/`](./app/) directory. It has three endpoints:
+```
+Developer pushes to main
+         │
+         ▼
+┌─────────────────────────────────────────┐
+│          GitHub Actions Pipeline        │
+│                                         │
+│  [Test] → [Build] → [Push] → [Deploy]   │
+└─────────────────────────────────────────┘
+         │
+         ▼ SSH
+┌─────────────────────────────────────────┐
+│          AWS EC2 (t3.micro)             │
+│          Amazon Linux 2023              │
+│          IP: 13.60.70.231               │
+│                                         │
+│  Docker container: kora-api             │
+│  Host port 80 → container port 3000     │
+└─────────────────────────────────────────┘
+         │
+         ▼
+  Image stored at:
+  ghcr.io/engkarangwa/kora-analytics-api
+```
+
+---
+
+## API Endpoints
 
 | Method | Route      | Description                            |
-| ------ | ---------- | -------------------------------------- |
+|--------|------------|----------------------------------------|
 | GET    | `/health`  | Returns `{ "status": "ok" }`           |
 | GET    | `/metrics` | Returns uptime and memory usage        |
 | POST   | `/data`    | Accepts a JSON body and echoes it back |
 
-Run it locally:
+---
+
+## Part 1 — Containerisation
+
+### Run locally
 
 ```bash
-cd app
-npm install
-npm start
+cd dev-ops/DeployReady
+cp .env.example .env
+docker compose up --build
 ```
 
-Do not change the application logic. Your work is everything around it.
+Test the endpoints:
+```bash
+curl http://localhost:3000/health
+curl http://localhost:3000/metrics
+```
+
+### Key decisions
+
+**Dockerfile:**
+- `node:20-alpine` as base image — Alpine keeps the image small and reduces attack surface
+- Dependencies installed with `npm ci` for reproducible builds from the lockfile
+- Non-root user `nodeuser` created and assigned file ownership via `--chown` on `COPY`
+- `HEALTHCHECK` uses `wget` (built into Alpine) to probe `/health` every 30 seconds
+- `USER nodeuser` set before `CMD` — the process never runs as root
+
+**docker-compose.yml:**
+- Loads variables from `.env` file at runtime
+- `restart: unless-stopped` — auto-recovers from crashes, stays stopped after a manual stop
+- Healthcheck mirrors the Dockerfile so Compose also tracks container health
 
 ---
 
-## 3. The Assignment
+## Part 2 — CI/CD Pipeline
 
-### Part 1 — Containerise the App
+Pipeline file: [`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml)
 
-**Deliverables:** A `Dockerfile` and a `docker-compose.yml` in the root of your repository.
+Triggers on every push to `main` that changes files inside `dev-ops/DeployReady/`.
 
-**Dockerfile requirements:**
+### Pipeline stages
 
-- The app must run inside a Docker container.
-- The container must accept a `PORT` environment variable.
-- The container must **not** run as the `root` user.
+| Stage | What it does | Fails if |
+|-------|-------------|----------|
+| **Test** | Runs `npm test` (Jest) | Any test fails |
+| **Build** | Builds Docker image, tags with commit SHA + `latest` | Build error |
+| **Push** | Pushes both tags to `ghcr.io` | Auth or network error |
+| **Deploy** | SSHs into EC2, pulls new image, restarts container, checks `/health` | Health check fails after boot |
 
-**Docker Compose requirements:**
+### Secrets required
 
-- Define the app as a service in `docker-compose.yml`.
-- Map port `3000` on the host to the container.
-- Pass the `PORT` variable via an `.env` file (include a `.env.example` with placeholder values).
-- Running the following must start a working API:
-  ```bash
-  docker compose up --build
-  ```
+| Secret | Purpose |
+|---|---|
+| `EC2_HOST` | EC2 public IP (`13.60.70.231`) |
+| `EC2_USER` | SSH username (`ec2-user`) |
+| `EC2_SSH_KEY` | Private key for SSH access |
+| `GHCR_USERNAME` | GitHub username (`EngKARANGWA`) |
+| `GHCR_TOKEN` | GitHub PAT with `read:packages` scope |
 
----
-
-### Part 2 — Automate the Pipeline
-
-**Deliverable:** A `.github/workflows/deploy.yml` GitHub Actions workflow.
-
-The pipeline must run these steps **in order** on every push to `main`:
-
-1. **Test** — Run `npm test`. If tests fail, the pipeline stops. Nothing gets deployed.
-2. **Build** — Build the Docker image and tag it with the Git commit SHA.
-3. **Push** — Push the image to a container registry (GitHub Container Registry, AWS ECR, GCR, ACR, or equivalent).
-4. **Deploy** — Pull the new image on your cloud server and restart the container.
-
-Additional requirements:
-
-- Secrets (SSH key, registry token) must be stored as **GitHub repository secrets** — never in the code.
-- Add a short comment above each step in the YAML explaining what it does.
+No secrets are stored in code or committed files.
 
 ---
 
-### Part 3 — Deploy to the Cloud
+## Part 3 — AWS Deployment
 
-**Deliverable:** A running service on a cloud platform and a short `DEPLOYMENT.md` explaining your setup.
+Full setup details in [DEPLOYMENT.md](./DEPLOYMENT.md).
 
-Use **AWS, GCP, Azure, or any other cloud provider you are familiar with**. Provision the following (via the cloud console is fine):
+**Cloud provider:** AWS — chosen because of free tier availability, mature EC2 tooling, and native integration with GitHub Actions via SSH.
 
-- A **virtual machine** (e.g. AWS EC2 `t2.micro`, GCP `e2-micro`, Azure B1s) with Docker installed.
-- A **firewall / security group** that allows:
-  - HTTP on port 80 from anywhere
-  - SSH on port 22 **from your IP only** — not open to the world
-- A **service account / IAM user or role** for the pipeline with only the permissions it needs.
+### Infrastructure
 
-At submission time, `GET http://<your-server-ip>/health` must return `{ "status": "ok" }`.
+- **Instance:** EC2 `t3.micro`, Amazon Linux 2023 — chosen over `t2.micro` because t3 is the current-generation burstable instance with better baseline CPU performance and lower cost per vCPU
+- **Public IP:** `13.60.70.231`
+- **Container registry:** GitHub Container Registry (`ghcr.io`)
 
-Document in `DEPLOYMENT.md`:
+### Security group rules
 
-- Which cloud provider and service you used, and why
-- How you set up the virtual machine
-- How you installed Docker and pulled your image
-- How to check if the container is running
-- How to view the application logs
+| Type | Port | Source                   |
+|------|------|--------------------------|
+| HTTP | 80   | `0.0.0.0/0`              |
+| SSH  | 22   | `154.68.64.230/32` (owner IP only) |
 
----
+### Verify the live deployment
 
-## 4. Bonus (Optional)
-
-Pick **one** of the following if you want to go further:
-
-- **Use Terraform** (or your cloud's IaC tool) to provision the VM and firewall rules instead of the console.
-- **Add a cloud monitoring alarm** (e.g. AWS CloudWatch, GCP Cloud Monitoring, Azure Monitor) that triggers if `/health` stops responding.
-- **Implement a rollback step** in the pipeline that re-deploys the previous image if the health check fails after deploy.
-
-Describe what you added and why in your `DEPLOYMENT.md`.
+```bash
+curl http://13.60.70.231/health
+# {"status":"ok"}
+```
 
 ---
 
-## 5. Submission Instructions
+## Project Structure
 
-1. **Fork** this repository.
-2. Complete all three parts in your fork.
-3. **Replace this README** with your own documentation (architecture overview, setup steps, decisions made).
-4. Submit your repo link via the [online form](https://forms.cloud.microsoft/e/f3FF83LVz3).
+```
+dev-ops/DeployReady/
+├── app/
+│   ├── index.js          # Express API (not modified)
+│   ├── index.test.js     # Jest tests
+│   └── package.json
+├── Dockerfile            # Non-root user, healthcheck, alpine base
+├── docker-compose.yml    # Local development setup
+├── .env.example          # Environment variable template
+├── DEPLOYMENT.md         # AWS setup and operations guide
+└── README.md             # This file
+
+.github/
+└── workflows/
+    └── deploy.yml        # 4-stage CI/CD pipeline
+```
 
 ---
 
-## ⚠️ Pre-Submission Checklist
+## Pre-Submission Checklist
 
-- [ ] `docker compose up --build` starts the app locally
-- [ ] A `.env.example` file is committed (the real `.env` is not)
-- [ ] At least one successful pipeline run is visible in the GitHub Actions tab
-- [ ] `GET /health` on your cloud server's public IP returns 200
-- [ ] No secrets or `.pem` files committed to the repository
-- [ ] SSH port 22 is **not** open to the world (`0.0.0.0/0`)
-- [ ] `DEPLOYMENT.md` is present and covers the four points in Part 3
-- [ ] This README has been replaced with your own documentation
-- [ ] Commit history shows progress over time (not a single upload commit)
+- [x] `docker compose up --build` starts the app locally
+- [x] `.env.example` is committed — real `.env` is gitignored
+- [x] At least one successful pipeline run visible in GitHub Actions tab
+- [x] `GET http://13.60.70.231/health` returns `{ "status": "ok" }`
+- [x] No secrets or `.pem` files committed to the repository
+- [x] SSH port 22 is **not** open to `0.0.0.0/0`
+- [x] `DEPLOYMENT.md` covers all four required points
+- [x] This README replaces the original assignment README
+- [x] Commit history shows incremental progress
