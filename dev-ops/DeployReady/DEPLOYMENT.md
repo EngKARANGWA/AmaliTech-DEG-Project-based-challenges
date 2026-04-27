@@ -9,11 +9,12 @@ GitHub (main branch)
 GitHub Actions Pipeline
   ├── 1. npm test
   ├── 2. docker build + tag with commit SHA
-  ├── 3. docker push → ghcr.io
+  ├── 3. docker push → ghcr.io/engkarangwa/kora-analytics-api
   └── 4. SSH → EC2 → docker pull + restart
                          │
                          ▼
                   EC2 t2.micro (Amazon Linux 2023)
+                  Public IP: 13.60.70.231
                   Docker container: kora-api
                   Port 80 → 3000
 ```
@@ -25,17 +26,17 @@ GitHub Actions Pipeline
 **Instance details:**
 - AMI: Amazon Linux 2023
 - Instance type: t2.micro (free tier)
-- Region: us-east-1 (or your chosen region)
-- Key pair: downloaded `.pem` file stored securely (never committed)
+- Public IP: 13.60.70.231
+- Key pair: `kora.pem` — stored securely, never committed to the repository
 
 **Security Group — `kora-api-sg`:**
 
-| Type | Protocol | Port | Source          | Reason                        |
-|------|----------|------|-----------------|-------------------------------|
-| HTTP | TCP      | 80   | 0.0.0.0/0       | Public API access             |
-| SSH  | TCP      | 22   | Your IP only    | Admin access — not open world |
+| Type | Protocol | Port | Source           | Reason                        |
+|------|----------|------|------------------|-------------------------------|
+| HTTP | TCP      | 80   | 0.0.0.0/0        | Public API access             |
+| SSH  | TCP      | 22   | 154.68.64.230/32 | Admin access — restricted to owner IP only |
 
-SSH port 22 is restricted to a single IP. It is **not** open to `0.0.0.0/0`.
+SSH port 22 is restricted to a single IP (`154.68.64.230/32`). It is **not** open to `0.0.0.0/0`.
 
 ---
 
@@ -57,8 +58,8 @@ sudo usermod -aG docker ec2-user
 
 Log out and back in, then authenticate with GHCR and pull the image:
 ```bash
-echo "<GHCR_TOKEN>" | docker login ghcr.io -u <GITHUB_USERNAME> --password-stdin
-docker pull ghcr.io/<github-username>/kora-analytics-api:latest
+echo "<GHCR_TOKEN>" | docker login ghcr.io -u EngKARANGWA --password-stdin
+docker pull ghcr.io/engkarangwa/kora-analytics-api:latest
 ```
 
 Start the container:
@@ -69,7 +70,7 @@ docker run -d \
   -p 80:3000 \
   -e PORT=3000 \
   -e NODE_ENV=production \
-  ghcr.io/<github-username>/kora-analytics-api:latest
+  ghcr.io/engkarangwa/kora-analytics-api:latest
 ```
 
 After each deploy the pipeline handles the pull and restart automatically via SSH.
@@ -85,8 +86,8 @@ docker ps
 # Check health status specifically
 docker inspect --format='{{.State.Health.Status}}' kora-api
 
-# Confirm the API responds
-curl http://localhost/health
+# Confirm the API responds locally on the server
+curl http://localhost:3000/health
 ```
 
 Expected output from the health check:
@@ -94,9 +95,9 @@ Expected output from the health check:
 {"status":"ok"}
 ```
 
-From outside the server (replace with your EC2 public IP):
+From outside the server:
 ```bash
-curl http://<EC2_PUBLIC_IP>/health
+curl http://13.60.70.231/health
 ```
 
 ---
@@ -118,14 +119,14 @@ docker logs -t kora-api
 
 ## Pipeline Secrets Reference
 
-The following secrets must be set in GitHub → Settings → Secrets → Actions:
+The following secrets are set in GitHub → Settings → Secrets → Actions:
 
 | Secret          | Description                                      |
 |-----------------|--------------------------------------------------|
-| `EC2_HOST`      | EC2 public IP address                            |
-| `EC2_USER`      | SSH username (`ec2-user` on Amazon Linux)        |
-| `EC2_SSH_KEY`   | Contents of the `.pem` private key file          |
-| `GHCR_USERNAME` | GitHub username for GHCR authentication          |
+| `EC2_HOST`      | `13.60.70.231`                                   |
+| `EC2_USER`      | `ec2-user`                                       |
+| `EC2_SSH_KEY`   | Contents of the `kora.pem` private key file      |
+| `GHCR_USERNAME` | `EngKARANGWA`                                    |
 | `GHCR_TOKEN`    | GitHub PAT with `read:packages` scope            |
 
 No secrets are stored in the repository or any committed file.
