@@ -42,9 +42,16 @@ SSH port 22 is restricted to a single IP (`154.68.64.230/32`). It is **not** ope
 
 ## 2. Installing Docker and Pulling the Image
 
+All commands below were run on Windows using **WSL 2** (Windows Subsystem for Linux 2), which provides a native Linux environment without a virtual machine. The `kora.pem` key was copied into the WSL home directory first so that `chmod` worked correctly on the Linux filesystem:
+
+```bash
+cp /mnt/c/Users/USER/Downloads/kora.pem ~/kora.pem
+chmod 400 ~/kora.pem
+```
+
 SSH into the instance:
 ```bash
-ssh -i kora.pem ec2-user@13.60.70.231
+ssh -i ~/kora.pem ec2-user@13.60.70.231
 ```
 
 Install and start Docker:

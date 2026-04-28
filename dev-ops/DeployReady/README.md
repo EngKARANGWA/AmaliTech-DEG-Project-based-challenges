@@ -49,6 +49,8 @@ Developer pushes to main
 
 ### Run locally
 
+> **Windows users:** All shell commands were run using **WSL 2** (Windows Subsystem for Linux 2). Open a WSL terminal before running the commands below.
+
 ```bash
 cd dev-ops/DeployReady
 cp .env.example .env
